@@ -1,0 +1,731 @@
+import pybullet as p
+import pybullet_data
+import os
+import time
+import traceback
+
+
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+
+CARPETA = os.path.dirname(os.path.abspath(__file__))
+
+URDF = os.path.join(
+    CARPETA,
+    "brazo.urdf"
+)
+
+
+# ============================================================
+# POSICIÓN DEL ROBOT
+# ============================================================
+
+ROBOT_X = 1.35
+ROBOT_Y = -0.70
+ROBOT_Z = 0.0
+
+ROBOT_POS = [
+    ROBOT_X,
+    ROBOT_Y,
+    ROBOT_Z
+]
+
+
+# ============================================================
+# PUNTA DEL BRAZO
+# ============================================================
+
+# Según el brazo que veníamos utilizando
+END_EFFECTOR = 4
+
+
+# ============================================================
+# CONFIGURACIÓN DEL DIBUJO
+# ============================================================
+
+# ------------------------------------------------------------
+# El dibujo estará AL FRENTE del robot
+#
+# X = izquierda / derecha
+# Y = profundidad
+# Z = arriba / abajo
+#
+# Vamos a dibujar en un plano X-Z.
+# ------------------------------------------------------------
+
+DRAW_Y = ROBOT_Y + 0.45
+
+# Centro horizontal del número
+DRAW_X = ROBOT_X + 0.25
+
+# Altura del dibujo
+DRAW_Z = 0.30
+
+# Tamaño del número
+NUMBER_WIDTH = 0.28
+NUMBER_HEIGHT = 0.40
+
+# Separación entre trazos
+PEN_LIFT_HEIGHT = 0.05
+
+
+# ============================================================
+# CONECTAR PYBULLET
+# ============================================================
+
+print("========================================")
+print("       INICIANDO PYBULLET")
+print("========================================")
+print()
+
+
+if not os.path.exists(URDF):
+
+    print("ERROR:")
+    print("No se encontró:")
+    print(URDF)
+
+    input("Presiona ENTER para cerrar...")
+    raise SystemExit
+
+
+try:
+
+    # --------------------------------------------------------
+    # CONEXIÓN
+    # --------------------------------------------------------
+
+    p.connect(p.GUI)
+
+    p.setAdditionalSearchPath(
+        pybullet_data.getDataPath()
+    )
+
+    p.resetSimulation()
+
+    p.setGravity(
+        0,
+        0,
+        -9.81
+    )
+
+
+    # --------------------------------------------------------
+    # PISO
+    # --------------------------------------------------------
+
+    p.loadURDF(
+        "plane.urdf"
+    )
+
+
+    # --------------------------------------------------------
+    # CARGAR BRAZO
+    # --------------------------------------------------------
+
+    robot = p.loadURDF(
+        URDF,
+        ROBOT_POS,
+        useFixedBase=True
+    )
+
+
+    # --------------------------------------------------------
+    # INFORMACIÓN
+    # --------------------------------------------------------
+
+    cantidad_joints = p.getNumJoints(robot)
+
+    print()
+    print("========================================")
+    print("       BRAZO CARGADO CORRECTAMENTE")
+    print("========================================")
+    print()
+
+    print(
+        "Cantidad de joints:",
+        cantidad_joints
+    )
+
+    print()
+
+    for i in range(cantidad_joints):
+
+        info = p.getJointInfo(
+            robot,
+            i
+        )
+
+        nombre = info[1].decode("utf-8")
+
+        print(
+            "Joint",
+            i,
+            "|",
+            nombre,
+            "| tipo:",
+            info[2]
+        )
+
+    print()
+
+
+    # ========================================================
+    # CREAR TABLERO VIRTUAL
+    # ========================================================
+
+    # El tablero solamente sirve como referencia visual.
+    # El número quedará dibujado encima.
+
+    tablero_collision = p.createCollisionShape(
+        p.GEOM_BOX,
+        halfExtents=[
+            NUMBER_WIDTH * 2,
+            0.015,
+            NUMBER_HEIGHT * 1.5
+        ]
+    )
+
+    tablero_visual = p.createVisualShape(
+        p.GEOM_BOX,
+        halfExtents=[
+            NUMBER_WIDTH * 2,
+            0.015,
+            NUMBER_HEIGHT * 1.5
+        ],
+        rgbaColor=[
+            0.85,
+            0.85,
+            0.85,
+            1
+        ]
+    )
+
+    p.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=tablero_collision,
+        baseVisualShapeIndex=tablero_visual,
+        basePosition=[
+            DRAW_X,
+            DRAW_Y + 0.03,
+            DRAW_Z + NUMBER_HEIGHT / 2
+        ]
+    )
+
+
+    # ========================================================
+    # POSICIÓN DEL EFECTOR
+    # ========================================================
+
+    def obtener_posicion_punta():
+
+        estado = p.getLinkState(
+            robot,
+            END_EFFECTOR,
+            computeForwardKinematics=True
+        )
+
+        return estado[4]
+
+
+    # ========================================================
+    # MOVER BRAZO
+    # ========================================================
+
+    def mover_a(x, y, z):
+
+        angulos = p.calculateInverseKinematics(
+            robot,
+            END_EFFECTOR,
+            [x, y, z]
+        )
+
+        for i in range(
+            min(len(angulos), cantidad_joints)
+        ):
+
+            p.setJointMotorControl2(
+                bodyIndex=robot,
+                jointIndex=i,
+                controlMode=p.POSITION_CONTROL,
+                targetPosition=angulos[i],
+                force=500
+            )
+
+
+    # ========================================================
+    # MOVER Y ESPERAR
+    # ========================================================
+
+    def ir_a_punto(x, y, z):
+
+        mover_a(
+            x,
+            y,
+            z
+        )
+
+        # Dejamos que el brazo llegue
+        for _ in range(25):
+
+            p.stepSimulation()
+
+            time.sleep(1 / 240)
+
+
+    # ========================================================
+    # PUNTO DE DIBUJO
+    # ========================================================
+
+    def punto(x, z):
+
+        return [
+            DRAW_X + x,
+            DRAW_Y,
+            DRAW_Z + z
+        ]
+
+
+    # ========================================================
+    # DIBUJAR TRAZO
+    # ========================================================
+
+    def dibujar_trazo(puntos):
+
+        if len(puntos) < 2:
+            return
+
+
+        # ----------------------------------------------------
+        # Llevar el brazo al primer punto
+        # ----------------------------------------------------
+
+        primero = puntos[0]
+
+        ir_a_punto(
+            primero[0],
+            primero[1],
+            primero[2]
+        )
+
+
+        # ----------------------------------------------------
+        # Dibujar
+        # ----------------------------------------------------
+
+        anterior = primero
+
+        for actual in puntos[1:]:
+
+            pasos = 15
+
+            for i in range(1, pasos + 1):
+
+                t = i / pasos
+
+                x = (
+                    anterior[0]
+                    +
+                    (actual[0] - anterior[0]) * t
+                )
+
+                y = (
+                    anterior[1]
+                    +
+                    (actual[1] - anterior[1]) * t
+                )
+
+                z = (
+                    anterior[2]
+                    +
+                    (actual[2] - anterior[2]) * t
+                )
+
+                ir_a_punto(
+                    x,
+                    y,
+                    z
+                )
+
+                # --------------------------------------------
+                # Línea permanente
+                # --------------------------------------------
+
+                if i > 1:
+
+                    p.addUserDebugLine(
+                        punto_anterior,
+                        [x, y, z],
+                        lineWidth=5,
+                        lifeTime=0
+                    )
+
+                punto_anterior = [x, y, z]
+
+
+            anterior = actual
+
+
+    # ========================================================
+    # FUNCIÓN AUXILIAR
+    # ========================================================
+
+    def trazo_local(lista):
+
+        puntos = []
+
+        for x, z in lista:
+
+            puntos.append(
+                punto(x, z)
+            )
+
+        dibujar_trazo(puntos)
+
+
+    # ========================================================
+    # NÚMERO 0
+    # ========================================================
+
+    def numero_0():
+
+        puntos = []
+
+        pasos = 40
+
+        for i in range(pasos + 1):
+
+            angulo = (
+                2 * 3.14159265 * i / pasos
+            )
+
+            x = (
+                NUMBER_WIDTH / 2
+                * 0.75
+                * __import__("math").cos(angulo)
+            )
+
+            z = (
+                NUMBER_HEIGHT / 2
+                * __import__("math").sin(angulo)
+            )
+
+            puntos.append(
+                punto(
+                    x,
+                    z + NUMBER_HEIGHT / 2
+                )
+            )
+
+        dibujar_trazo(puntos)
+
+
+    # ========================================================
+    # NÚMERO 1
+    # ========================================================
+
+    def numero_1():
+
+        trazo_local([
+            (-0.07, NUMBER_HEIGHT),
+            (0.00, NUMBER_HEIGHT + 0.05),
+            (0.00, 0.00)
+        ])
+
+        trazo_local([
+            (-0.10, 0.00),
+            (0.10, 0.00)
+        ])
+
+
+    # ========================================================
+    # NÚMERO 2
+    # ========================================================
+
+    def numero_2():
+
+        trazo_local([
+            (-0.13, NUMBER_HEIGHT),
+            (0.10, NUMBER_HEIGHT),
+            (0.13, NUMBER_HEIGHT - 0.06),
+            (-0.13, 0.02),
+            (0.13, 0.02)
+        ])
+
+
+    # ========================================================
+    # NÚMERO 3
+    # ========================================================
+
+    def numero_3():
+
+        trazo_local([
+            (-0.10, NUMBER_HEIGHT),
+            (0.10, NUMBER_HEIGHT),
+            (0.12, NUMBER_HEIGHT - 0.10),
+            (0.00, NUMBER_HEIGHT / 2),
+            (0.12, NUMBER_HEIGHT / 2 - 0.05),
+            (0.10, 0.00),
+            (-0.10, 0.00)
+        ])
+
+
+    # ========================================================
+    # NÚMERO 4
+    # ========================================================
+
+    def numero_4():
+
+        trazo_local([
+            (0.08, 0.00),
+            (0.08, NUMBER_HEIGHT)
+        ])
+
+        trazo_local([
+            (0.08, 0.00),
+            (-0.13, 0.00),
+            (0.03, NUMBER_HEIGHT)
+        ])
+
+
+    # ========================================================
+    # NÚMERO 5
+    # ========================================================
+
+    def numero_5():
+
+        trazo_local([
+            (0.12, NUMBER_HEIGHT),
+            (-0.12, NUMBER_HEIGHT),
+            (-0.12, NUMBER_HEIGHT / 2),
+            (0.10, NUMBER_HEIGHT / 2),
+            (0.13, NUMBER_HEIGHT / 2 - 0.05),
+            (0.10, 0.00),
+            (-0.12, 0.00)
+        ])
+
+
+    # ========================================================
+    # NÚMERO 6
+    # ========================================================
+
+    def numero_6():
+
+        trazo_local([
+            (0.10, NUMBER_HEIGHT),
+            (-0.08, NUMBER_HEIGHT),
+            (-0.13, 0.10),
+            (-0.05, 0.00),
+            (0.10, 0.00),
+            (0.13, 0.06),
+            (0.10, NUMBER_HEIGHT / 2),
+            (-0.10, NUMBER_HEIGHT / 2)
+        ])
+
+
+    # ========================================================
+    # NÚMERO 7
+    # ========================================================
+
+    def numero_7():
+
+        trazo_local([
+            (-0.13, NUMBER_HEIGHT),
+            (0.13, NUMBER_HEIGHT),
+            (-0.02, 0.00)
+        ])
+
+
+    # ========================================================
+    # NÚMERO 8
+    # ========================================================
+
+    def numero_8():
+
+        trazo_local([
+            (0.00, NUMBER_HEIGHT),
+            (-0.10, NUMBER_HEIGHT),
+            (-0.10, NUMBER_HEIGHT / 2),
+            (0.10, NUMBER_HEIGHT / 2),
+            (0.10, NUMBER_HEIGHT),
+            (0.00, NUMBER_HEIGHT),
+            (-0.10, NUMBER_HEIGHT / 2),
+            (-0.10, 0.00),
+            (0.10, 0.00),
+            (0.10, NUMBER_HEIGHT / 2)
+        ])
+
+
+    # ========================================================
+    # NÚMERO 9
+    # ========================================================
+
+    def numero_9():
+
+        trazo_local([
+            (-0.10, NUMBER_HEIGHT / 2),
+            (-0.10, NUMBER_HEIGHT),
+            (0.10, NUMBER_HEIGHT),
+            (0.12, NUMBER_HEIGHT / 2),
+            (0.00, NUMBER_HEIGHT / 2),
+            (-0.10, NUMBER_HEIGHT / 2)
+        ])
+
+        trazo_local([
+            (0.10, NUMBER_HEIGHT / 2),
+            (0.10, 0.00)
+        ])
+
+
+    # ========================================================
+    # DICCIONARIO DE NÚMEROS
+    # ========================================================
+
+    numeros = {
+
+        "0": numero_0,
+        "1": numero_1,
+        "2": numero_2,
+        "3": numero_3,
+        "4": numero_4,
+        "5": numero_5,
+        "6": numero_6,
+        "7": numero_7,
+        "8": numero_8,
+        "9": numero_9
+
+    }
+
+
+    # ========================================================
+    # MENÚ
+    # ========================================================
+
+    print()
+    print("========================================")
+    print("          BRAZO DIBUJADOR")
+    print("========================================")
+    print()
+    print("Escribe un número del 0 al 9.")
+    print()
+    print("Ejemplo:")
+    print()
+    print("    5")
+    print()
+    print("El brazo dibujará el número.")
+    print()
+    print("Escribe q para salir.")
+    print()
+
+
+    # ========================================================
+    # BUCLE PRINCIPAL
+    # ========================================================
+
+    while True:
+
+        numero = input(
+            "Escribe un número (0-9): "
+        ).strip()
+
+
+        # ----------------------------------------------------
+        # SALIR
+        # ----------------------------------------------------
+
+        if numero.lower() == "q":
+
+            print("Cerrando...")
+            break
+
+
+        # ----------------------------------------------------
+        # COMPROBAR
+        # ----------------------------------------------------
+
+        if numero not in numeros:
+
+            print(
+                "ERROR: escribe solamente un número del 0 al 9."
+            )
+
+            continue
+
+
+        # ----------------------------------------------------
+        # DIBUJAR
+        # ----------------------------------------------------
+
+        print()
+        print(
+            "Dibujando número:",
+            numero
+        )
+
+        print(
+            "Espera mientras el brazo realiza los trazos..."
+        )
+
+        print()
+
+
+        numeros[numero]()
+
+
+        print()
+        print(
+            "Número",
+            numero,
+            "terminado."
+        )
+
+        print(
+            "El dibujo queda visible en PyBullet."
+        )
+
+        print()
+
+
+        # ----------------------------------------------------
+        # VOLVER A LA TERMINAL
+        # ----------------------------------------------------
+
+        # PyBullet continúa ejecutándose
+        for _ in range(10):
+
+            p.stepSimulation()
+
+            time.sleep(1 / 240)
+
+
+except Exception as error:
+
+    print()
+    print("========================================")
+    print("              ERROR")
+    print("========================================")
+    print()
+
+    print(error)
+
+    print()
+    print("DETALLES:")
+    print()
+
+    traceback.print_exc()
+
+    print()
+
+    input(
+        "Presiona ENTER para cerrar..."
+    )
+
+
+finally:
+
+    try:
+        p.disconnect()
+
+    except:
+        pass
