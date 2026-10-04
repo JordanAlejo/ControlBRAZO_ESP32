@@ -1,8 +1,13 @@
+
 import pybullet as p
 import pybullet_data
 import os
 import time
 import traceback
+import math
+import serial
+import serial.tools.list_ports
+import msvcrt
 
 
 # ============================================================
@@ -15,6 +20,19 @@ URDF = os.path.join(
     CARPETA,
     "brazo.urdf"
 )
+
+
+# ============================================================
+# CONFIGURACIÓN ESP32
+# ============================================================
+
+# CAMBIA ESTO SI TU ESP32 ESTÁ EN OTRO PUERTO
+PUERTO_ESP32 = "COM3"
+
+# Velocidad Serial
+BAUDRATE = 115200
+
+esp32 = None
 
 
 # ============================================================
@@ -36,7 +54,6 @@ ROBOT_POS = [
 # PUNTA DEL BRAZO
 # ============================================================
 
-# Según el brazo que veníamos utilizando
 END_EFFECTOR = 4
 
 
@@ -44,30 +61,187 @@ END_EFFECTOR = 4
 # CONFIGURACIÓN DEL DIBUJO
 # ============================================================
 
-# ------------------------------------------------------------
-# El dibujo estará AL FRENTE del robot
-#
-# X = izquierda / derecha
-# Y = profundidad
-# Z = arriba / abajo
-#
-# Vamos a dibujar en un plano X-Z.
-# ------------------------------------------------------------
+# El dibujo está al frente del robot.
 
 DRAW_Y = ROBOT_Y + 0.45
 
-# Centro horizontal del número
 DRAW_X = ROBOT_X + 0.25
 
-# Altura del dibujo
 DRAW_Z = 0.30
 
-# Tamaño del número
 NUMBER_WIDTH = 0.28
+
 NUMBER_HEIGHT = 0.40
 
-# Separación entre trazos
 PEN_LIFT_HEIGHT = 0.05
+
+
+# ============================================================
+# LISTA DE LÍNEAS DEL DIBUJO
+# ============================================================
+
+# Aquí guardaremos todas las líneas que pertenecen
+# al número actual.
+
+lineas_dibujo = []
+
+
+# ============================================================
+# CONECTAR ESP32
+# ============================================================
+
+def conectar_esp32():
+
+    global esp32
+
+    print()
+    print("========================================")
+    print("        CONECTANDO CON ESP32")
+    print("========================================")
+    print()
+
+    try:
+
+        esp32 = serial.Serial(
+            PUERTO_ESP32,
+            BAUDRATE,
+            timeout=0
+        )
+
+        time.sleep(2)
+
+        esp32.reset_input_buffer()
+
+        print("ESP32 conectada correctamente.")
+        print("Puerto:", PUERTO_ESP32)
+        print("Baudrate:", BAUDRATE)
+        print()
+
+    except Exception as error:
+
+        print("No se pudo conectar con la ESP32.")
+        print()
+        print("Puerto configurado:", PUERTO_ESP32)
+        print()
+        print("Puedes revisar los puertos disponibles:")
+        print()
+
+        puertos = serial.tools.list_ports.comports()
+
+        if len(puertos) == 0:
+
+            print("No se encontraron puertos COM.")
+
+        else:
+
+            for puerto in puertos:
+
+                print(
+                    puerto.device,
+                    "|",
+                    puerto.description
+                )
+
+        print()
+        print("PyBullet continuará funcionando solamente")
+        print("con el teclado del computador.")
+        print()
+
+        esp32 = None
+
+
+# ============================================================
+# LEER ESP32
+# ============================================================
+
+def leer_esp32():
+
+    if esp32 is None:
+        return None
+
+    try:
+
+        if esp32.in_waiting > 0:
+
+            dato = esp32.readline().decode(
+                "utf-8",
+                errors="ignore"
+            ).strip()
+
+            if dato:
+
+                # Buscar solamente números 0-9
+                for caracter in dato:
+
+                    if caracter in "0123456789":
+
+                        return caracter
+
+    except Exception as error:
+
+        print()
+        print("Error leyendo ESP32:")
+        print(error)
+        print()
+
+    return None
+
+
+# ============================================================
+# LEER TECLADO DEL COMPUTADOR
+# ============================================================
+
+def leer_teclado_pc():
+
+    if msvcrt.kbhit():
+
+        tecla = msvcrt.getch()
+
+        try:
+
+            tecla = tecla.decode(
+                "utf-8"
+            )
+
+        except:
+
+            return None
+
+        return tecla
+
+    return None
+
+
+# ============================================================
+# BORRAR DIBUJO ANTERIOR
+# ============================================================
+
+def borrar_dibujo():
+
+    global lineas_dibujo
+
+    if len(lineas_dibujo) == 0:
+        return
+
+    print()
+    print("Borrando número anterior...")
+
+    for linea in lineas_dibujo:
+
+        try:
+
+            p.removeUserDebugItem(
+                linea
+            )
+
+        except:
+
+            pass
+
+    lineas_dibujo.clear()
+
+    print("Número anterior eliminado.")
+    print()
 
 
 # ============================================================
@@ -84,19 +258,25 @@ if not os.path.exists(URDF):
 
     print("ERROR:")
     print("No se encontró:")
+
     print(URDF)
 
-    input("Presiona ENTER para cerrar...")
+    input(
+        "Presiona ENTER para cerrar..."
+    )
+
     raise SystemExit
 
 
 try:
 
-    # --------------------------------------------------------
-    # CONEXIÓN
-    # --------------------------------------------------------
+    # ========================================================
+    # CONEXIÓN PYBULLET
+    # ========================================================
 
-    p.connect(p.GUI)
+    p.connect(
+        p.GUI
+    )
 
     p.setAdditionalSearchPath(
         pybullet_data.getDataPath()
@@ -111,18 +291,18 @@ try:
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # PISO
-    # --------------------------------------------------------
+    # ========================================================
 
     p.loadURDF(
         "plane.urdf"
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # CARGAR BRAZO
-    # --------------------------------------------------------
+    # ========================================================
 
     robot = p.loadURDF(
         URDF,
@@ -131,11 +311,13 @@ try:
     )
 
 
-    # --------------------------------------------------------
-    # INFORMACIÓN
-    # --------------------------------------------------------
+    # ========================================================
+    # INFORMACIÓN DEL ROBOT
+    # ========================================================
 
-    cantidad_joints = p.getNumJoints(robot)
+    cantidad_joints = p.getNumJoints(
+        robot
+    )
 
     print()
     print("========================================")
@@ -157,7 +339,9 @@ try:
             i
         )
 
-        nombre = info[1].decode("utf-8")
+        nombre = info[1].decode(
+            "utf-8"
+        )
 
         print(
             "Joint",
@@ -172,11 +356,8 @@ try:
 
 
     # ========================================================
-    # CREAR TABLERO VIRTUAL
+    # CREAR TABLERO
     # ========================================================
-
-    # El tablero solamente sirve como referencia visual.
-    # El número quedará dibujado encima.
 
     tablero_collision = p.createCollisionShape(
         p.GEOM_BOX,
@@ -215,7 +396,7 @@ try:
 
 
     # ========================================================
-    # POSICIÓN DEL EFECTOR
+    # POSICIÓN DE LA PUNTA
     # ========================================================
 
     def obtener_posicion_punta():
@@ -238,11 +419,18 @@ try:
         angulos = p.calculateInverseKinematics(
             robot,
             END_EFFECTOR,
-            [x, y, z]
+            [
+                x,
+                y,
+                z
+            ]
         )
 
         for i in range(
-            min(len(angulos), cantidad_joints)
+            min(
+                len(angulos),
+                cantidad_joints
+            )
         ):
 
             p.setJointMotorControl2(
@@ -266,12 +454,13 @@ try:
             z
         )
 
-        # Dejamos que el brazo llegue
         for _ in range(25):
 
             p.stepSimulation()
 
-            time.sleep(1 / 240)
+            time.sleep(
+                1 / 240
+            )
 
 
     # ========================================================
@@ -293,12 +482,14 @@ try:
 
     def dibujar_trazo(puntos):
 
+        global lineas_dibujo
+
         if len(puntos) < 2:
             return
 
 
         # ----------------------------------------------------
-        # Llevar el brazo al primer punto
+        # PRIMER PUNTO
         # ----------------------------------------------------
 
         primero = puntos[0]
@@ -311,16 +502,28 @@ try:
 
 
         # ----------------------------------------------------
-        # Dibujar
+        # VARIABLE ANTERIOR
         # ----------------------------------------------------
 
         anterior = primero
+
+
+        # ----------------------------------------------------
+        # DIBUJAR CADA SEGMENTO
+        # ----------------------------------------------------
 
         for actual in puntos[1:]:
 
             pasos = 15
 
-            for i in range(1, pasos + 1):
+            punto_anterior = list(
+                anterior
+            )
+
+            for i in range(
+                1,
+                pasos + 1
+            ):
 
                 t = i / pasos
 
@@ -348,27 +551,38 @@ try:
                     z
                 )
 
+
                 # --------------------------------------------
-                # Línea permanente
+                # CREAR LÍNEA PERMANENTE
                 # --------------------------------------------
 
-                if i > 1:
+                linea = p.addUserDebugLine(
+                    punto_anterior,
+                    [
+                        x,
+                        y,
+                        z
+                    ],
+                    lineWidth=5,
+                    lifeTime=0
+                )
 
-                    p.addUserDebugLine(
-                        punto_anterior,
-                        [x, y, z],
-                        lineWidth=5,
-                        lifeTime=0
-                    )
+                # Guardamos la línea para poder borrarla
+                lineas_dibujo.append(
+                    linea
+                )
 
-                punto_anterior = [x, y, z]
-
+                punto_anterior = [
+                    x,
+                    y,
+                    z
+                ]
 
             anterior = actual
 
 
     # ========================================================
-    # FUNCIÓN AUXILIAR
+    # TRAZO LOCAL
     # ========================================================
 
     def trazo_local(lista):
@@ -378,10 +592,15 @@ try:
         for x, z in lista:
 
             puntos.append(
-                punto(x, z)
+                punto(
+                    x,
+                    z
+                )
             )
 
-        dibujar_trazo(puntos)
+        dibujar_trazo(
+            puntos
+        )
 
 
     # ========================================================
@@ -394,21 +613,30 @@ try:
 
         pasos = 40
 
-        for i in range(pasos + 1):
+        for i in range(
+            pasos + 1
+        ):
 
             angulo = (
-                2 * 3.14159265 * i / pasos
+                2
+                * math.pi
+                * i
+                / pasos
             )
 
             x = (
                 NUMBER_WIDTH / 2
                 * 0.75
-                * __import__("math").cos(angulo)
+                * math.cos(
+                    angulo
+                )
             )
 
             z = (
                 NUMBER_HEIGHT / 2
-                * __import__("math").sin(angulo)
+                * math.sin(
+                    angulo
+                )
             )
 
             puntos.append(
@@ -418,7 +646,9 @@ try:
                 )
             )
 
-        dibujar_trazo(puntos)
+        dibujar_trazo(
+            puntos
+        )
 
 
     # ========================================================
@@ -579,7 +809,7 @@ try:
 
 
     # ========================================================
-    # DICCIONARIO DE NÚMEROS
+    # DICCIONARIO
     # ========================================================
 
     numeros = {
@@ -599,6 +829,13 @@ try:
 
 
     # ========================================================
+    # CONECTAR ESP32
+    # ========================================================
+
+    conectar_esp32()
+
+
+    # ========================================================
     # MENÚ
     # ========================================================
 
@@ -607,15 +844,21 @@ try:
     print("          BRAZO DIBUJADOR")
     print("========================================")
     print()
-    print("Escribe un número del 0 al 9.")
+
+    print("ENTRADAS DISPONIBLES:")
     print()
-    print("Ejemplo:")
+
+    print("1. Teclado del computador")
+    print("2. Teclado conectado a ESP32")
     print()
-    print("    5")
+
+    print("Números disponibles: 0 - 9")
     print()
-    print("El brazo dibujará el número.")
+
+    print("Presiona Q en el computador para salir.")
     print()
-    print("Escribe q para salir.")
+
+    print("========================================")
     print()
 
 
@@ -625,78 +868,117 @@ try:
 
     while True:
 
-        numero = input(
-            "Escribe un número (0-9): "
-        ).strip()
+
+        # ====================================================
+        # ACTUALIZAR PYBULLET
+        # ====================================================
+
+        p.stepSimulation()
 
 
-        # ----------------------------------------------------
-        # SALIR
-        # ----------------------------------------------------
+        # ====================================================
+        # REVISAR TECLADO PC
+        # ====================================================
 
-        if numero.lower() == "q":
-
-            print("Cerrando...")
-            break
+        numero_pc = leer_teclado_pc()
 
 
-        # ----------------------------------------------------
-        # COMPROBAR
-        # ----------------------------------------------------
+        if numero_pc is not None:
 
-        if numero not in numeros:
+            numero_pc = numero_pc.strip()
 
+
+            # ------------------------------------------------
+            # SALIR
+            # ------------------------------------------------
+
+            if numero_pc.lower() == "q":
+
+                print()
+                print("Cerrando programa...")
+                break
+
+
+            # ------------------------------------------------
+            # NÚMERO DESDE PC
+            # ------------------------------------------------
+
+            if numero_pc in numeros:
+
+                print()
+                print(
+                    "Número recibido desde PC:",
+                    numero_pc
+                )
+
+                # BORRAR ANTES DE DIBUJAR
+                borrar_dibujo()
+
+                print(
+                    "Dibujando:",
+                    numero_pc
+                )
+
+                print()
+
+                numeros[
+                    numero_pc
+                ]()
+
+                print()
+                print(
+                    "Número",
+                    numero_pc,
+                    "terminado."
+                )
+                print()
+
+
+        # ====================================================
+        # REVISAR ESP32
+        # ====================================================
+
+        numero_esp32 = leer_esp32()
+
+
+        if numero_esp32 is not None:
+
+            print()
             print(
-                "ERROR: escribe solamente un número del 0 al 9."
+                "Número recibido desde ESP32:",
+                numero_esp32
             )
 
-            continue
+            # BORRAR ANTES DE DIBUJAR
+            borrar_dibujo()
+
+            print(
+                "Dibujando:",
+                numero_esp32
+            )
+
+            print()
+
+            numeros[
+                numero_esp32
+            ]()
+
+            print()
+            print(
+                "Número",
+                numero_esp32,
+                "terminado."
+            )
+            print()
 
 
-        # ----------------------------------------------------
-        # DIBUJAR
-        # ----------------------------------------------------
+        # ====================================================
+        # PEQUEÑA PAUSA
+        # ====================================================
 
-        print()
-        print(
-            "Dibujando número:",
-            numero
+        time.sleep(
+            1 / 240
         )
-
-        print(
-            "Espera mientras el brazo realiza los trazos..."
-        )
-
-        print()
-
-
-        numeros[numero]()
-
-
-        print()
-        print(
-            "Número",
-            numero,
-            "terminado."
-        )
-
-        print(
-            "El dibujo queda visible en PyBullet."
-        )
-
-        print()
-
-
-        # ----------------------------------------------------
-        # VOLVER A LA TERMINAL
-        # ----------------------------------------------------
-
-        # PyBullet continúa ejecutándose
-        for _ in range(10):
-
-            p.stepSimulation()
-
-            time.sleep(1 / 240)
 
 
 except Exception as error:
@@ -725,7 +1007,20 @@ except Exception as error:
 finally:
 
     try:
+
+        if esp32 is not None:
+
+            esp32.close()
+
+    except:
+
+        pass
+
+
+    try:
+
         p.disconnect()
 
     except:
+
         pass
